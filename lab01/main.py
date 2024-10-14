@@ -107,7 +107,8 @@ def inverse(matrix):
 def solve_eq(a, b):
     return mul_mv(inverse(a), b)
 
-# bonus answer: every line, diagonal or column, if multiplied, gives the determinant
+# bonus answer: every line, diagonal or column, if multiplied with it's corresponding line, column 
+# from the original matrix, gives the determinant
 
 if __name__ == "__main__":
     a, b = parse("input.txt")
