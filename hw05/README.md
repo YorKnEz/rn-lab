@@ -44,12 +44,19 @@ These are the hyperparameters that can be tuned in order to obtain better result
   - It is always `2`.
 - `discount_rate`: How much the agent takes into account future rewards.
   - By default `0.95`.
-- `epsilon`: Exploration factor.
-  - By default `0.1`.
+- `initial_epsilon`, `final_epsilon`, `decay_length`: Linearly decaying exploration factor.
+  - By default `0.1`, `0.0001` and `1_000_000`, respectively.
 - `replay_buffer_size`: How many past experiences the agent will remember.
   - By default `50_000`
 - `learning_rate`, `decay` and `momentum`: Hyperparameters of RMSProp.
   - By default `1e-6`, `0.9` and `0.95`, respectively.
+- `batch_size`: The size of a minibatches used for training the network in one step.
+  - By default `32`.
+
+**Others:**
+
+- `observe_epochs`: The agent will play `observe_epochs` random games to populate its replay buffer.
+- `train_epochs`: How many games to play in order to train. An epoch in our case is a whole game as opposed to just a frame because it seemed more natural at that time.
 
 Throughout the rest of this document, we will refer to these parameters by name instead of by value.
 
@@ -114,23 +121,23 @@ The DQL algorithm combines Q-learning with a neural network. Key components:
 
 1. **Replay Buffer**:
    - Stores past transitions `(state, action, reward, next_state, done)`.
-   - Initially, random actions are performed to populate the buffer with diverse experiences -- observation phase.
+   - Initially, the agent will play `observe_epochs` games in which random actions will be performed to populate the buffer with diverse experiences -- we call this the observation phase.
 2. **Batch Sampling**:
    - Instead of training only on the current state, a batch of transitions is sampled from the buffer to stabilize training and reduce correlation in sequential data.
 3. **Target Update**:
    - Q-value targets are computed depending on the `done` flag, which signifies if `next_state` is terminal
-     - if `done = True`, the target is the reward for executing action `a` in state `s`, which leads to state `s'`:
-       $$R(s, a, s')$$
+     - if `done = True`, the target is the reward for executing `action` in `state`, which leads to state `new_state`:
+       $$R(state, action, new\_state)$$
      - if `done = False`, the target is computed using the Q-learning update rule:
-       $$R(s,a, s') + \gamma \max_{a'}(s', a')$$
-   - Discount rate is a hyperparameter.
+       $$R(state, action, new\_state) + \gamma \max_{new\_action}(new\_state, new\_action)$$
+     - (note: we used the notations from our implementation in the formulas, instead of the generic `s`, `a`, `s'`, etc.)
+   - Discount rate is a hyperparameter, which dictates how much the future decisions matter in taking the current decision.
 4. **Forward and Backward Pass**:
-   - The NN generates Q-value predictions for the current state batch and the Q-value corresponding
-     to the executed action is extracted for comparison with the target.
+   - The NN generates for a given state, the possible Q-values for all of the possible actions, then a target array is computed using the formulas mentioned above.
    - The Mean Squared Error (MSE) between the predicted Q-values and the targets is computed.
-   - Gradients are backpropagated, and weights are updated using the RMSProp optimizer (lr = `1e-6`, decay rate = `0.9`, momentum = `0.95`)
+   - Gradients are backpropagated, and weights are updated using the RMSProp optimizer, with `learning_rate`, `decay_rate` and `momentum` being hyperparameters.
 5. **Epsilon-Greedy Policy:**:
-   - During training, actions are chosen using an epsilon-greedy approach to balance exploration (random actions) and exploitation (choosing actions with the highest predicted Q-value).
+   - During training, actions are chosen using an epsilon-greedy approach to balance exploration (random actions) and exploitation (choosing actions with the highest predicted Q-value). The epsilon is decayed linearly over time, which can be set with the `initial_epsilon`, `final_epsilon` and `decay_length` hyperparameters.
 
 ---
 
@@ -138,8 +145,8 @@ The DQL algorithm combines Q-learning with a neural network. Key components:
 
 The agent's policy involves selecting actions based on:
 
-1. **Exploration**: Random actions with probability `\epsilon` (10%).
-2. **Exploitation**: Actions maximizing Q-values for the current state.
+1. **Exploration**: A random action with probability `epsilon`.
+2. **Exploitation**: The action that has the highest Q-value for the current state.
 
 This ensures the agent balances learning new strategies and exploiting known optimal behaviors.
 
@@ -150,42 +157,57 @@ This ensures the agent balances learning new strategies and exploiting known opt
 1. **Observation Phase**:
    - The agent plays randomly to populate the replay buffer.
 2. **Training Phase**:
-   - Mini-batches of transitions sampled from the buffer to update the neural network.
+   - Mini-batches of transitions sampled from the buffer to update the neural network, of size `batch_size`.
    - Loss backpropagated through the network for gradient-based optimization.
 
-The training process started with the easy version of the environment (100-pixel pipe gap) to allow the agent to develop basic gameplay skills. Subsequently, the model was specialized to medium difficulty (170-pixel gap) using the weights of the previously trained model. Finally, the agent was trained on the hard version (240-pixel gap) using, once again, the weights of the previously trained model.
+In order to obtain the best results we trained the agents on higher difficulties with the weights of the lower agents. For example we would train 5k games on easy then, with the same model, continue training it 5k games on medium, which improved immensely the results.
 
-Hyperparameters:
+---
 
-- Observation epochs: 1,000.
-- Training epochs: 5,000.
-- Batch size: 32.
+## Other attempts
+
+What things we tried until arriving at the current setup:
+
+- architecture:
+  - we tried different architectures for the CNN, initially we tried regular NNs too, all yielding not-as-good results
+  - we tried `AdamW` before `RMSProp`, but it seemed like `RMSProp` was better
+  - we tried using cross entropy instead of MSE, but it quickly became evident that it made no sense in the context of this problem
+- we tried training without the replay buffer, just on the current frame, the results were very bad
+- we tried storing episodes and replaying them but it made the agent peform worse (we assume it was so because of the high grade of correlation between consecutive frames)
+- we tried training without using batches, i.e., training only on the current frame, which also had the problem of high correlation, thus giving not-so-great results
+- we tried no decay for epsilon which didn't necessarily give bad results, but it couldn't be trained for a large number of epochs since it learned very well it's environment and then that high `epsilon` basically impeded its way to even higher scores, which, in turn, ruined the future training
+- we tried no state preprocessing but the states size were immense and also very colorful, which made the CNN very confused
+- we tried training directly on the regular environment which was a very bad decision, since the agent had to get very good very fast
 
 ---
 
 ## Results
 
-### Performance Metrics
+Our best results were obtained by three of our models, each on its own difficulty:
 
-- **Average Score**: The average score in 100 tests.
-- **Evaluation Criteria**: If the agent scores above 1,000, we consider it as achieving "infinity" for practical purposes.
-
-### Difficulty Breakdown:
-
-- **Easy**:
+- **Easy** (by `model_0_5k`):
   - Average Score: Infinity
   - Max Score: Infinity
-- **Medium**:
-  - Average Score: Infinity
+- **Medium** (by `model_1_10k`):
+  - Average Score: ~850
   - Max Score: Infinity
-- **Hard**:
-  - Average Score: 100
-  - Max Score: 250
+- **Hard** (by `model_2_5k`):
+  - Average Score: ~220
+  - Max Score: ~900
 
-### Visualizations
+Note: If the agent scores above 1,000, we consider it as achieving "infinity" for practical purposes.
 
-- **Training Scores**:
-  ![Score 10k easy + 5k medium -- easy mode](graphs/model_1k.png)
+We present below centralized graphs for our results on the current architecture only (as we did not save graphs for other attempts)
+
+| Name       | Train                           | Test Easy                                 | Test Medium                                 | Test Hard |
+| ---------- | ------------------------------- | ----------------------------------------- | ------------------------------------------- | --------- |
+| model_0_5k | [scores](graphs/model_0_5k.png) | [scores](graphs/model_0_5k_test_easy.png) | [scores](graphs/model_0_5k_test_medium.png) | -         |
+| model_1_5k | [scores](graphs/model_1_5k.png) | [scores](graphs/model_1_5k_test_easy.png) | [scores](graphs/model_1_5k_test_medium.png) | -         |
+| model_1_10k | [scores](graphs/model_1_10k.png) | [scores](graphs/model_1_10k_test_easy.png) | [scores](graphs/model_1_10k_test_medium.png) | -         |
+| model_2_5k | [scores](graphs/model_2_5k.png) | [scores](graphs/model_2_5k_test_easy.png) | [scores](graphs/model_2_5k_test_medium.png) | [scores](graphs/model_2_5k_test_hard.png), [scores2](graphs/model_2_5k_test_hard2.png) |
+| model_2_6k | [scores](graphs/model_2_6k.png) | [scores](graphs/model_2_6k_test_easy.png) | [scores](graphs/model_2_6k_test_medium.png) | [scores](graphs/model_2_6k_test_hard.png) |
+
+Name convention: `model_x_y`, where `x` si the difficulty (`0` for `easy`, `1` for `medium`, `2` for `hard`) and `y` is the number of epochs trained on that difficulty.
 
 ## References
 
